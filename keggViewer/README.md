@@ -1,1 +1,1 @@
-![keggViewer](figures/keggViewer.png "keggViewer")
+![keggViewer](../figures/keggViewer.png "keggViewer")
