@@ -4,42 +4,20 @@ library(png)
 library(raster)
 library(leaflet)
 library(biomaRt)
+library(KEGGREST)
 library(XML)
 library(DT)
 
-CONTRASTS <- c("ERCvsWT0", "WT24vsERC", "WT24vsWT0")
-PATHWAYS <- list(
- "Carbon metabolism"="dme01200",
- "Glycolysis / Gluconeogenesis"="dme00010",
- "Citrate cycle (TCA cycle)"="dme00020",
- "Pentose phosphate pathway"="dme00030",
- "Pentose and glucuronate interconversions"="dme00040",
- "Fructose and mannose metabolism"="dme00051",
- "Galactose metabolism"="dme00052",
- "Pyruvate metabolism"="dme00620",
- "Oxidative phosphorylation"="dme00190",
- "Protein export"="dme03060",
- "Protein processing in endoplasmic reticulum"="dme04141",
- "SNARE interactions in vesicular transport"="dme04130",
- "ABC transporters"="dme02010",
- "MAPK signaling pathway - fly"="dme04013",
- "Wnt signaling pathway"="dme04310",
- "Notch signaling pathway"="dme04330",
- "Hedgehog signaling pathway - fly"="dme04341",
- "TGF-beta signaling pathway"="dme04350",
- "Hippo signaling pathway - fly"="dme04391",
- "Hippo signaling pathway -multiple species"="dme04392",
- "FoxO signaling pathway"="dme04068",
- "Phosphatidylinositol signaling system"="dme04070",
- "mTOR signaling pathway"="dme04150",
- "Endocytosis"="dme04144",
- "AGE-RAGE signaling pathway in diabetic complications"="dme04933"
-)
+CONTRASTS <- c(ERCvsWT0="/fsimb/groups/imb-bioinfocf/projects/jgu/jgu_berger_2016_01_kaiser_RNA-Seq/with_UMIs/results/DE_DESeq2/ERCvsWT0.csv",
+               WT24vsERC="/fsimb/groups/imb-bioinfocf/projects/jgu/jgu_berger_2016_01_kaiser_RNA-Seq/with_UMIs/results/DE_DESeq2/WT24vsERC.csv",
+               WT24vsWT0="/fsimb/groups/imb-bioinfocf/projects/jgu/jgu_berger_2016_01_kaiser_RNA-Seq/with_UMIs/results/DE_DESeq2/WT24vsWT0.csv")
 
 ui <- fluidPage(
   fluidRow(
-    column(4, selectInput("pathway", "Pathway:", choices=PATHWAYS, selected=PATHWAYS[2])),
-    column(4, selectInput("contrast", "Contrast:", choices=CONTRASTS, selected=CONTRASTS[1])),
+    column(4, selectInput("contrast", "Contrast:", choices=names(CONTRASTS), selected=names(CONTRASTS)[1])),
+#    column(4, align="center", textInput("pathway", "Pathway: Glycolysis / Gluconeogenesis", value="dme00010"),
+#                              actionButton("process", "Update!")),
+    column(4, selectInput("pathway", "Pathway:", choices=NULL)),
     column(4, sliderInput("plotSize", "Plot size:", min=400, max=1000, value=600, step=100))
   ),
   uiOutput("mapUI"),
@@ -49,6 +27,25 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
  
+  ##
+  ## create UI
+  ##
+  # load list of kegg pathways
+  withProgress({
+    f <- "pw.RData"
+    if(file.exists(f)) {
+      load(f)
+    } else {
+      x <- keggList("pathway", organism="dme")
+      x <- sort(x)
+      pathways <- gsub("^path:", "", names(x))
+      names(pathways) <- gsub(" - Drosophila melanogaster \\(fruit fly\\)$", "", x)
+      save(pathways, file=f)
+    }
+  }, value=0, message="Loading list of kegg pathways")
+  updateSelectInput(session, "pathway", "Pathway:", choices=pathways, selected="dme00010") #pathways[1])
+  
+  # plot area
   output$mapUI <- renderUI({
     leafletOutput("map", height=input$plotSize)
   })
@@ -57,17 +54,8 @@ server <- function(input, output, session) {
   ## read DE results
   ##
   withProgress({
-    f <- "de.RData"
-    if(file.exists(f)) {
-      # do nothing, it will be loaded later
-    } else {
-      files <- c("/fsimb/groups/imb-bioinfocf/projects/jgu/jgu_berger_2016_01_kaiser_RNA-Seq/with_UMIs/results/DE_DESeq2/ERCvsWT0.csv",
-                 "/fsimb/groups/imb-bioinfocf/projects/jgu/jgu_berger_2016_01_kaiser_RNA-Seq/with_UMIs/results/DE_DESeq2/WT24vsERC.csv",
-                 "/fsimb/groups/imb-bioinfocf/projects/jgu/jgu_berger_2016_01_kaiser_RNA-Seq/with_UMIs/results/DE_DESeq2/WT24vsWT0.csv")
-      
-      de <- lapply(files, read.csv, check.names=FALSE)
-      names(de) <- c("ERCvsWT0", "WT24vsERC", "WT24vsWT0")
-    }
+    if(!file.exists("de.RData"))
+      de <- lapply(CONTRASTS, read.csv, check.names=FALSE)
   }, value=0, message="Loading differential expression data")
   
   ##
@@ -97,6 +85,7 @@ server <- function(input, output, session) {
     
     # get from kegg's SOAP
     kegg <- xmlToList(xmlParse(paste0("http://rest.kegg.jp/get/", pathway, "/kgml")))
+    title <- kegg$.attrs["title"]
     
     # parse
     kegg <- lapply(kegg, function(x) {
@@ -115,7 +104,8 @@ server <- function(input, output, session) {
       }
     })
     
-    do.call(rbind, c(kegg[!sapply(kegg, is.null)], make.row.names=FALSE))
+    list(title=title,
+         ohs=do.call(rbind, c(kegg[!sapply(kegg, is.null)], make.row.names=FALSE)))
   }
   
   ##
@@ -179,22 +169,28 @@ server <- function(input, output, session) {
   ##
   ## Download pathway XML description
   ##
+#  pathwayXML <- eventReactive(input$process, {
   pathwayXML <- reactive({
+    
+    if(input$pathway == "") return(list(title="", ohs=data.frame()))
+                                      
     # load pathway description file from kegg
     f <- paste0(input$pathway, ".xml.RData")
     if(file.exists(f)) {
       load(f)
     } else {
-      withProgress(ohs <- downloadKeggXml(input$pathway), value=0, message="Downloading pathway description from Kegg")
-      save(ohs, file=f)
+      withProgress(x <- downloadKeggXml(input$pathway), value=0, message="Downloading pathway description from Kegg")
+      save(x, file=f)
     }
     
-    ohs
+    # return the parsed kegg XML file
+    x
   })
   
   ##
   ## Download pathway IMG file
   ##
+#  pathwayIMG <- eventReactive(input$process, {
   pathwayIMG <- reactive({
     # download and raster pathway image from kegg
     f <- paste0(input$pathway, ".img.RData")
@@ -220,7 +216,7 @@ server <- function(input, output, session) {
   ##
   output$map <- renderLeaflet({
     input$plotSize
-    doPlot(ohs=pathwayXML(), img=pathwayIMG(), de=DE())
+    doPlot(ohs=pathwayXML()$ohs, img=pathwayIMG(), de=DE())
   })
   
   ##
@@ -230,7 +226,7 @@ server <- function(input, output, session) {
     
     # select genes in the contrast which are involved in this pathway
     de=DE()
-    ohs=pathwayXML()
+    ohs=pathwayXML()$ohs
     DT::datatable(de[de$cgid %in% ohs$cgid, ])
   })
 }
