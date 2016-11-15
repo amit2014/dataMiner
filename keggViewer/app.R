@@ -227,7 +227,7 @@ server <- function(input, output, session) {
     # select genes in the contrast which are involved in this pathway
     de=DE()
     ohs=pathwayXML()$ohs
-    DT::datatable(de[de$cgid %in% ohs$cgid, ])
+    DT::datatable(de[de$cgid %in% ohs$cgid, ], rownames=FALSE) %>% formatRound(columns=grep("^(WT|ERC|mean|log2)", colnames(out)))
   })
 }
 
